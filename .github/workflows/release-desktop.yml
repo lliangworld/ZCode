@@ -90,6 +90,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Bugfix: pacman 目标由 fpm 生成 .MTREE 清单时调用 bsdtar（exit 127 = 命令不存在），
+      # ubuntu-latest 镜像未预装 libarchive-tools，导致 linux 构建在最后一步失败。
+      - name: Install Linux packaging prerequisites
+        if: matrix.target_os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools
+
       - name: Bundle desktop (${{ matrix.target_os }}/${{ matrix.target_arch }})
         env:
           ZCODE_ENV: production
