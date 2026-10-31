@@ -58,6 +58,8 @@ ZCode-3.17.1-20261031-linux-x64.AppImage / .deb / .rpm / .pkg.tar.zst
 
 - **fork 首次启用**：推送 dev 分支后需在仓库 Actions 标签页手动启用 workflow
   （"I understand my workflows, go ahead and enable them"）。
+- **推送基线**：本 fork 没有 `origin/staging` 分支，pre-push 的受影响工程测试基线需显式指定，
+  否则新分支首次推送会失败：`ZCODE_AFFECTED_TEST_BASE=origin/main git push ...`。
 - **未签名产物**：本 fork 无代码签名证书，产物为未签名安装包——Windows 会弹 SmartScreen
   提示（点"仍要运行"），macOS 首次打开需右键 → 打开，或 `xattr -cr /Applications/ZCode.app`。
 - **签名扩展（可选）**：如需签名，准备 OV 代码签名证书（.pfx），在仓库 secrets 配置
