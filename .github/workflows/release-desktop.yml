@@ -1,0 +1,127 @@
+name: Release Desktop
+
+# 本 fork 的桌面端发布流水线：
+# - workflow_dispatch：dev 分支上的测试构建，只产出 Actions Artifacts，不发布 Release。
+# - 推送 v* tag：三平台构建后发布 GitHub Release。
+# fork 发版 tag 采用 v<版本>-<YYYYMMDD> 格式（如 v3.17.1-20261031），与上游纯 v<版本> tag 空间区分。
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.os_alias }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_alias: mac-arm64
+            runs_on: macos-latest # arm64 runner
+            target_os: mac
+            target_arch: arm64
+            artifact_paths: |
+              packages/desktop/dist/ZCode-*-mac-arm64.dmg
+              packages/desktop/dist/ZCode-*-mac-arm64.zip
+              packages/desktop/dist/*.blockmap
+              packages/desktop/dist/latest-mac.yml
+          - os_alias: win-x64
+            runs_on: windows-latest
+            target_os: win
+            target_arch: x64
+            artifact_paths: |
+              packages/desktop/dist/ZCode-*-win-x64.exe
+              packages/desktop/dist/*.exe.blockmap
+              packages/desktop/dist/latest.yml
+          - os_alias: linux-x64
+            runs_on: ubuntu-latest
+            target_os: linux
+            target_arch: x64
+            artifact_paths: |
+              packages/desktop/dist/ZCode-*.AppImage
+              packages/desktop/dist/ZCode-*.deb
+              packages/desktop/dist/ZCode-*.rpm
+              packages/desktop/dist/ZCode-*.pkg.tar.zst
+              packages/desktop/dist/latest-linux.yml
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本读取 root package.json 的 packageManager: pnpm@10.33.2
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - name: Cache Electron / electron-builder binaries
+        uses: actions/cache@v4
+        with:
+          key: electron-${{ runner.os }}-${{ hashFiles('packages/desktop/package.json') }}
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+
+      # tag 构建专用：校验 v<版本>-<YYYYMMDD> 并把 root package.json version 改写为
+      # <版本>-<日期>。产物版本经由 packages/desktop/scripts/build-metadata.mjs（appVersion）
+      # → electron-builder extraMetadata.version 注入，安装包文件名与应用内版本随之带上日期，
+      # 与上游纯 v<版本> 产物区分。改动只发生在 CI 运行区，不提交回仓库。
+      # 注意：脚本内不使用 $ 与反引号，保证 pwsh（windows runner）与 bash 解析一致；
+      # 用块标量承载，避免普通标量中的 "colon+space" 破坏 YAML 结构。
+      - name: Validate tag and stamp version with date
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          node -e "const fs=require('fs');const tag=process.env.GITHUB_REF_NAME;const parts=tag.split('-');const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));if(parts.length!==2||parts[0]!=='v'+pkg.version||parts[1].length!==8||isNaN(Number(parts[1]))){console.error('Tag must be v'+pkg.version+'-YYYYMMDD, got: '+tag);process.exit(1)}pkg.version=pkg.version+'-'+parts[1];fs.writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n');console.log('CI stamped version: '+pkg.version)"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Bundle desktop (${{ matrix.target_os }}/${{ matrix.target_arch }})
+        env:
+          ZCODE_ENV: production
+          # 可选签名：配置 secrets 后 electron-builder 内置签名链路自动生效（标准 CSC_LINK/.pfx，
+          # 不依赖本 fork 中缺失的 scripts/sign-windows.ps1）；不配置时为空字符串，产出未签名包。
+          # 不要设置 ZCODE_ENABLE_WINDOWS_SIGN=1：该链路的 sign-windows.ps1 不在本 fork 中，必失败。
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: pnpm bundle:desktop -- --os ${{ matrix.target_os }} --arch ${{ matrix.target_arch }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode-desktop-${{ matrix.os_alias }}
+          if-no-files-found: error
+          path: ${{ matrix.artifact_paths }}
+
+  release:
+    name: Publish GitHub Release
+    # 仅 tag 构建发布；dispatch 测试构建只保留 Artifacts。
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/**
