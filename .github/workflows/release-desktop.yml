@@ -98,6 +98,37 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libarchive-tools
 
+      # Bugfix: windows-latest 镜像已升级到 VS 2026（安装路径 Visual Studio\18），
+      # 不再附带 VS 2022。上游 v3.18.0 同步引入 scripts/windows-runtime-host 原生组件，
+      # 其 CMake 配置硬编码 "Visual Studio 17 2022" 生成器
+      # （scripts/build-windows-runtime-host.mjs resolveRuntimeHostBuild），
+      # configure 报 "could not find any instance of Visual Studio"，
+      # 经 "Runtime host CMake failed: 1" → prepare:windows-runtime-host 失败，
+      # 导致 win-x64 打包整体失败（v3.18.0-20261112 发版时 win 作业即此原因，
+      # mac/linux 不受影响：该步骤仅 win 路径执行）。
+      # 修复依据：在 Bundle 前安装 VS 2022 Build Tools 的 MSVC 工具集与 NativeDesktop
+      # 核心组件（含 Windows SDK）。VS Build Tools 会经 vswhere 注册，CMake 的
+      # VS 17 2022 生成器即可发现实例。不引入 microsoft/setup-msbuild：
+      # 该 action 仅将 MSBuild.exe 加入 PATH，不安装 VS 也不解决 CMake 生成器发现。
+      # 仅 win 作业执行；本步骤只在 CI 运行区安装，不提交回仓库。
+      - name: Install Visual Studio 2022 Build Tools (runtime host)
+        if: matrix.target_os == 'win'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:RUNNER_TEMP "vs_buildtools.exe"
+          Invoke-WebRequest -Uri "https://aka.ms/vs/15/release/vs_buildtools.exe" -OutFile $installer
+          $installArgs = @(
+            "--quiet", "--wait", "--norestart",
+            "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "--add", "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core"
+          )
+          Write-Host "Installing VS 2022 Build Tools (MSVC toolset + Windows SDK) for runtime host CMake build"
+          $proc = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            throw "VS Build Tools install failed with exit code $($proc.ExitCode)"
+          }
+
       - name: Bundle desktop (${{ matrix.target_os }}/${{ matrix.target_arch }})
         env:
           ZCODE_ENV: production

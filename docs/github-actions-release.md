@@ -32,6 +32,8 @@ fork 发版 tag 必须采用 **`v<版本>-<YYYYMMDD>`** 格式，例如 `v3.17.1
 2. 确认 tag 打在**包含本工作流文件的提交**上（Actions 按 tag 指向的提交加载 workflow）。
 3. 推送 tag：`git push origin v3.17.1-20261031`。
 
+完整命令清单见下文「命令清单（手动执行）」一节。
+
 CI 会在构建前校验 tag 格式（版本部分必须等于 package.json 当前版本，日期为 8 位数字），
 并把 root `package.json` 的 version 改写为 `<版本>-<日期>`。该改写只发生在 CI 运行区，不提交回仓库。
 产物版本经由 `packages/desktop/scripts/build-metadata.mjs`（`appVersion`）→
@@ -42,6 +44,51 @@ ZCode-3.17.1-20261031-win-x64.exe
 ZCode-3.17.1-20261031-mac-arm64.dmg / .zip
 ZCode-3.17.1-20261031-linux-x64.AppImage / .deb / .rpm / .pkg.tar.zst
 ```
+
+## 命令清单
+
+从同步上游到打 tag 发版的完整命令，按顺序执行：
+
+```bash
+# 1. 基线检查（只读）：确认工作区干净、与 origin/dev 同步
+node scripts/check-workspace-freshness.mjs
+git status
+
+# 2. 拉取上游更新
+git fetch upstream
+
+# 3. 查看上游新提交（无输出即已是最新，可到此为止）
+git log --oneline upstream/main ^dev
+
+# 4. main 分支快进同步（main 是上游镜像，应可 ff；失败说明已分叉，停下报告）
+git checkout main
+git merge --ff-only upstream/main
+
+# 5. 合并上游到 dev（有冲突则 git merge --abort 后人工处理，不自动解决）
+git checkout dev
+git merge upstream/main --no-edit
+
+# 6. 推送分支（--no-verify 跳过 pre-push 钩子；需要完整验证时删掉该参数）
+git push --no-verify origin dev main
+
+# 7. 确认版本号与 dev HEAD（tag 版本必须等于 package.json 的 version）
+grep -m1 '"version"' package.json
+git rev-parse HEAD
+
+# 8. 打附注 tag：格式 v<版本>-<YYYYMMDD>，日期为当天，消息沿用惯例
+git tag -a v3.18.0-20261112 -m "ZCode fork desktop release v3.18.0 (2026-11-12)"
+
+# 9. 推送 tag 触发 CI（三平台构建 + 自动发布 GitHub Release）
+git push --no-verify origin v3.18.0-20261112
+
+# 10. 查看 CI 运行状态（gh 需显式指定 fork 仓库，否则默认解析到上游）
+gh run list -R lliangworld/ZCode --workflow=release-desktop.yml --limit 3
+```
+
+- 第 8 步示例为 `v3.18.0-20261112`；实际执行时版本取 root `package.json` 的 `version`，日期取当天，否则 CI 校验失败。
+- tag 必须打在包含 `.github/workflows/release-desktop.yml` 的提交上（dev 分支自 `e35f950e` 起均满足）。
+- 合并冲突时 `git merge --abort` 停止并人工处理；fork 特有文件（`.github/workflows/release-desktop.yml`、`docs/github-actions-release.md`）最可能冲突。
+- 第 3 步无输出表示上游没有新提交，不做任何合并和推送。
 
 ## 构建矩阵
 
@@ -60,6 +107,16 @@ ZCode-3.17.1-20261031-linux-x64.AppImage / .deb / .rpm / .pkg.tar.zst
   （"I understand my workflows, go ahead and enable them"）。
 - **推送基线**：本 fork 没有 `origin/staging` 分支，pre-push 的受影响工程测试基线需显式指定，
   否则新分支首次推送会失败：`ZCODE_AFFECTED_TEST_BASE=origin/main git push ...`。
+- **win 构建依赖 VS 2022 Build Tools**：上游 v3.18.0 起桌面打包包含 Windows 原生组件
+  `zcode-runtime-host`（`scripts/windows-runtime-host`，CMake 硬编码
+  `Visual Studio 17 2022` 生成器，见 `scripts/build-windows-runtime-host.mjs`）。
+  `windows-latest` 镜像已升级到 VS 2026（无 VS 2022），configure 会报
+  "could not find any instance of Visual Studio" 导致 win 打包失败
+  （v3.18.0-20261112 发版时 win 作业即此原因；mac/linux 不受影响：该步骤仅 win 路径执行）。
+  因此 win 作业在 Bundle 前用 `vs_buildtools.exe` 安装 VS 2022 Build Tools
+  （MSVC 工具集 + NativeDesktop 核心组件，经 vswhere 注册供 CMake 发现）。
+  不要改用 `microsoft/setup-msbuild`：该 action 只把 MSBuild.exe 加入 PATH，
+  不安装 VS 也不解决 CMake 生成器发现。上游若改为自适应 VS 版本或更换构建方式，可移除该步骤。
 - **未签名产物**：本 fork 无代码签名证书，产物为未签名安装包——Windows 会弹 SmartScreen
   提示（点"仍要运行"），macOS 首次打开需右键 → 打开，或 `xattr -cr /Applications/ZCode.app`。
 - **签名扩展（可选）**：如需签名，准备 OV 代码签名证书（.pfx），在仓库 secrets 配置
