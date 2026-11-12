@@ -36,7 +36,11 @@ jobs:
               packages/desktop/dist/*.blockmap
               packages/desktop/dist/latest-mac.yml
           - os_alias: win-x64
-            runs_on: windows-latest
+            # windows-latest 已切到 VS 2026（安装路径 Visual Studio\18，无 VS 2022），
+            # 上游 runtime host 的 CMake 硬编码 "Visual Studio 17 2022" 生成器会直接失败；
+            # windows-2022 预装 VS 2022 Enterprise（17.14），生成器可直接发现。
+            # 该镜像退役时改回 windows-latest，由下方安装步骤兜底（见其轮询等待实现）。
+            runs_on: windows-2022
             target_os: win
             target_arch: x64
             artifact_paths: |
@@ -111,10 +115,12 @@ jobs:
       # 安装后经 vswhere 注册，CMake 的 VS 17 2022 生成器即可发现。
       # 不引入 microsoft/setup-msbuild：该 action 仅将 MSBuild.exe 加入 PATH，
       # 不安装 VS 也不解决 CMake 生成器发现。
-      # 返工依据（首次修复后 CMake 仍报找不到实例）：Start-Process -Wait 只等待
-      # 直接进程，引导程序自我更新派生的新进程使其提前返回退出码 0，安装实际未完成；
-      # 且 CMake 经 COM 枚举只认已完成注册的实例。改用调用运算符同步执行安装，
-      # 容忍 3010（需重启但安装已完成），并输出 vswhere 探测与安装日志便于定位。
+      # 返工依据（两次修复后 CMake 仍报找不到实例）：vs_buildtools.exe 父进程在派生
+      # 子安装进程后立即退出（退出码 0），Start-Process -Wait 与调用运算符都只等到父
+      # 进程；步骤结束即被作业进程树回收，安装实际未完成，而 CMake 经 COM 枚举只认
+      # 已完成注册的实例。因此启动后必须轮询等待实例注册，不能以父进程退出为准。
+      # 正常情况下 win 作业跑在预装 VS 2022 的 windows-2022 上，本步骤直接跳过；
+      # 只有镜像失去 VS 2022 时才真正安装。
       # 仅 win 作业执行；本步骤只在 CI 运行区安装，不提交回仓库。
       - name: Install Visual Studio 2022 Build Tools (runtime host)
         if: matrix.target_os == 'win'
@@ -122,10 +128,15 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs2022 = & $vswhere -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          function Get-VS2022 {
+            & $vswhere -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          }
+          $vs2022 = Get-VS2022
           if (-not $vs2022) {
             $installer = Join-Path $env:RUNNER_TEMP "vs_buildtools.exe"
-            Invoke-WebRequest -Uri "https://aka.ms/vs/15/release/vs_buildtools.exe" -OutFile $installer
+            # vs/17/release 是 VS 2022（v17）频道；vs/stable 会装到 VS 2026（v18），
+            # 与 CMake 的 "Visual Studio 17 2022" 生成器不匹配。
+            Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile $installer
             $log = Join-Path $env:RUNNER_TEMP "vs_buildtools_install.log"
             $installArgs = @(
               "--quiet", "--wait", "--norestart", "--nocache", "--log", $log,
@@ -134,10 +145,16 @@ jobs:
             )
             Write-Host "Installing VS 2022 Build Tools (MSVC toolset + Windows SDK) for runtime host CMake build"
             & $installer @installArgs
-            # 0=成功；3010=需要重启（安装已完成，CI 无需重启）。
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+            # 父进程立即退出不代表安装完成：轮询直到 vswhere 发现 v17.x 实例或超时，
+            # 保持步骤存活，避免子安装进程被作业进程树回收。
+            $deadline = (Get-Date).AddMinutes(25)
+            do {
+              Start-Sleep -Seconds 15
+              $vs2022 = Get-VS2022
+            } while (-not $vs2022 -and (Get-Date) -lt $deadline)
+            if (-not $vs2022) {
               Get-Content $log -Tail 60 -ErrorAction SilentlyContinue
-              throw "VS Build Tools install failed with exit code $LASTEXITCODE"
+              throw "VS 2022 Build Tools not registered after install (see installer log tail above)"
             }
           }
           else {

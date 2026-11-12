@@ -113,8 +113,12 @@ gh run list -R lliangworld/ZCode --workflow=release-desktop.yml --limit 3
   `windows-latest` 镜像已升级到 VS 2026（无 VS 2022），configure 会报
   "could not find any instance of Visual Studio" 导致 win 打包失败
   （v3.18.0-20261112 发版时 win 作业即此原因；mac/linux 不受影响：该步骤仅 win 路径执行）。
-  因此 win 作业在 Bundle 前用 `vs_buildtools.exe` 安装 VS 2022 Build Tools
-  （MSVC 工具集 + NativeDesktop 核心组件，经 vswhere 注册供 CMake 发现）。
+  主修复：win 作业固定 `runs-on: windows-2022`（预装 VS 2022 Enterprise 17.14，
+  与 pnpm、ncnn 等社区做法一致）；镜像退役时改回 `windows-latest`。
+  兜底：win 作业保留 `Install Visual Studio 2022 Build Tools` 步骤——镜像没有 v17.x
+  实例时用 `vs/17/release` 频道的 `vs_buildtools.exe` 安装 MSVC 工具集与
+  NativeDesktop 核心组件。注意引导程序父进程派生子安装进程后立即退出（退出码 0），
+  不能以父进程退出或 `--wait` 为准，必须轮询 vswhere 确认实例注册（同 pnpm 的结论）。
   不要改用 `microsoft/setup-msbuild`：该 action 只把 MSBuild.exe 加入 PATH，
   不安装 VS 也不解决 CMake 生成器发现。上游若改为自适应 VS 版本或更换构建方式，可移除该步骤。
 - **未签名产物**：本 fork 无代码签名证书，产物为未签名安装包——Windows 会弹 SmartScreen
