@@ -121,6 +121,15 @@ gh run list -R lliangworld/ZCode --workflow=release-desktop.yml --limit 3
   不能以父进程退出或 `--wait` 为准，必须轮询 vswhere 确认实例注册（同 pnpm 的结论）。
   不要改用 `microsoft/setup-msbuild`：该 action 只把 MSBuild.exe 加入 PATH，
   不安装 VS 也不解决 CMake 生成器发现。上游若改为自适应 VS 版本或更换构建方式，可移除该步骤。
+- **pnpm hoisted 链接竞态**：本仓库 `.npmrc` 为 `node-linker=hoisted` 且有 9 个
+  `patchedDependencies`，命中 pnpm 已知竞态（pnpm/pnpm#13627、#12880）：install 末期
+  worker 线程把 `_tmp_*` 暂存目录 rename 到 hoisted 目标路径时可能
+  `ERR_PNPM_ENOENT` 失败。官方修复在 pnpm>=11.25（#13627→11.22，#12880→11.25），
+  10.x 线至 10.34.9 无 backport，升级属大版本迁移需单独排期。
+  临时缓解：`Install dependencies` 步骤内最多 4 次重试——首次尝试已把 store 写满，
+  重试即热 store 场景（v3.18.2-20261113 起启用）。
+  注意：不要用整 job 重跑替代——`actions/setup-node` 的 pnpm store 缓存只在 job
+  成功时保存，失败的 job 不写缓存，Re-run failed jobs 会再次冷安装、再次踩雷。
 - **未签名产物**：本 fork 无代码签名证书，产物为未签名安装包——Windows 会弹 SmartScreen
   提示（点"仍要运行"），macOS 首次打开需右键 → 打开，或 `xattr -cr /Applications/ZCode.app`。
 - **签名扩展（可选）**：如需签名，准备 OV 代码签名证书（.pfx），在仓库 secrets 配置

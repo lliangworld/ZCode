@@ -91,8 +91,29 @@ jobs:
         run: |
           node -e "const fs=require('fs');const tag=process.env.GITHUB_REF_NAME;const parts=tag.split('-');const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));if(parts.length!==2||parts[0]!=='v'+pkg.version||parts[1].length!==8||isNaN(Number(parts[1]))){console.error('Tag must be v'+pkg.version+'-YYYYMMDD, got: '+tag);process.exit(1)}pkg.version=pkg.version+'-'+parts[1];fs.writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n');console.log('CI stamped version: '+pkg.version)"
 
+      # Bugfix: pnpm@10.33 在 node-linker=hoisted 模式下存在已知竞态
+      # （pnpm/pnpm#13627、pnpm/pnpm#12880）：hoisted 硬链接由 worker 线程并发执行，
+      # 把 _tmp_* 暂存目录 rename 到目标路径时，可能因父目录被并发 swap-rename 搬走
+      # （#12880，与我们踩到的形态一致：bundle-require/vite 的嵌套 esbuild hoisted
+      # 副本），或因 patchedDependencies 的同步 chdir 窗口（#13627）而 ERR_PNPM_ENOENT。
+      # 本仓库 .npmrc 为 node-linker=hoisted 且有 9 个 patchedDependencies，两个触发
+      # 条件都命中；v3.18.2-20261113 linux runner 连续两次冷安装命中（mac/win 同条件通过）。
+      # 官方修复在 pnpm>=11.25（#13627→11.22，#12880→11.25；10.x 线至 10.34.9 均无
+      # backport），升级属大版本迁移，另行排期。临时缓解为同 job 内重试：首次尝试已把
+      # store 写满，重试即热 store 场景；且 setup-node 的 store 缓存只在 job 成功时保存，
+      # 整 job 重跑（Re-run failed jobs）会再次冷启动，无法破局。
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        shell: bash
+        run: |
+          for i in 1 2 3 4; do
+            if pnpm install --frozen-lockfile; then
+              exit 0
+            fi
+            echo "::warning::pnpm install failed (attempt $i/4), retrying in 5s"
+            sleep 5
+          done
+          echo "::error::pnpm install failed after 4 attempts"
+          exit 1
 
       # Bugfix: pacman 目标由 fpm 生成 .MTREE 清单时调用 bsdtar（exit 127 = 命令不存在），
       # ubuntu-latest 镜像未预装 libarchive-tools，导致 linux 构建在最后一步失败。
