@@ -1,7 +1,7 @@
 name: Release Desktop
 
 # 本 fork 的桌面端发布流水线：
-# - workflow_dispatch：dev 分支上的测试构建，只产出 Actions Artifacts，不发布 Release。
+# - workflow_dispatch：release 分支上的测试构建，只产出 Actions Artifacts，不发布 Release。
 # - 推送 v* tag：三平台构建后发布 GitHub Release。
 # fork 发版 tag 采用 v<版本>-<YYYYMMDD> 格式（如 v3.17.1-20261031），与上游纯 v<版本> tag 空间区分。
 on:

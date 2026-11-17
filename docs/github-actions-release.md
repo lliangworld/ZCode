@@ -6,16 +6,16 @@
 
 ## Remote 说明
 
-| remote     | 地址                                   | 用途                               |
-| ---------- | -------------------------------------- | ---------------------------------- |
-| `origin`   | `git@github.com:lliangworld/ZCode`     | 自己的 fork，推 dev 分支与发版 tag |
-| `upstream` | `https://github.com/zai-org/ZCode.git` | 同步上游源码，只 fetch 不 push     |
+| remote     | 地址                                   | 用途                                   |
+| ---------- | -------------------------------------- | -------------------------------------- |
+| `origin`   | `git@github.com:lliangworld/ZCode`     | 自己的 fork，推 release 分支与发版 tag |
+| `upstream` | `https://github.com/zai-org/ZCode.git` | 同步上游源码，只 fetch 不 push         |
 
 ## 触发方式
 
 工作流文件：[.github/workflows/release-desktop.yml](../.github/workflows/release-desktop.yml)
 
-- **手动触发（测试构建）**：Actions 页选择 "Release Desktop" → "Run workflow" → 选 dev 分支。
+- **手动触发（测试构建）**：Actions 页选择 "Release Desktop" → "Run workflow" → 选 release 分支。
   只构建并上传 Actions Artifacts（`zcode-desktop-{mac-arm64,win-x64,linux-x64}`），不发布 Release。
   产物版本不加日期后缀（如 `ZCode-3.17.1-win-x64.exe`）。
 - **tag 触发（正式发版）**：推送 `v*` 格式 tag 自动构建三平台，并发布 GitHub Release（附全部安装包）。
@@ -50,7 +50,7 @@ ZCode-3.17.1-20261031-linux-x64.AppImage / .deb / .rpm / .pkg.tar.zst
 从同步上游到打 tag 发版的完整命令，按顺序执行：
 
 ```bash
-# 1. 基线检查（只读）：确认工作区干净、与 origin/dev 同步
+# 1. 基线检查（只读）：确认工作区干净、与 origin/release 同步
 node scripts/check-workspace-freshness.mjs
 git status
 
@@ -58,20 +58,20 @@ git status
 git fetch upstream
 
 # 3. 查看上游新提交（无输出即已是最新，可到此为止）
-git log --oneline upstream/main ^dev
+git log --oneline upstream/main ^release
 
 # 4. main 分支快进同步（main 是上游镜像，应可 ff；失败说明已分叉，停下报告）
 git checkout main
 git merge --ff-only upstream/main
 
-# 5. 合并上游到 dev（有冲突则 git merge --abort 后人工处理，不自动解决）
-git checkout dev
+# 5. 合并上游到 release（有冲突则 git merge --abort 后人工处理，不自动解决）
+git checkout release
 git merge upstream/main --no-edit
 
 # 6. 推送分支（--no-verify 跳过 pre-push 钩子；需要完整验证时删掉该参数）
-git push --no-verify origin dev main
+git push --no-verify origin release main
 
-# 7. 确认版本号与 dev HEAD（tag 版本必须等于 package.json 的 version）
+# 7. 确认版本号与 release HEAD（tag 版本必须等于 package.json 的 version）
 grep -m1 '"version"' package.json
 git rev-parse HEAD
 
@@ -86,7 +86,7 @@ gh run list -R lliangworld/ZCode --workflow=release-desktop.yml --limit 3
 ```
 
 - 第 8 步示例为 `v3.18.0-20261112`；实际执行时版本取 root `package.json` 的 `version`，日期取当天，否则 CI 校验失败。
-- tag 必须打在包含 `.github/workflows/release-desktop.yml` 的提交上（dev 分支自 `e35f950e` 起均满足）。
+- tag 必须打在包含 `.github/workflows/release-desktop.yml` 的提交上（release 分支自 `e35f950e` 起均满足）。
 - 合并冲突时 `git merge --abort` 停止并人工处理；fork 特有文件（`.github/workflows/release-desktop.yml`、`docs/github-actions-release.md`）最可能冲突。
 - 第 3 步无输出表示上游没有新提交，不做任何合并和推送。
 
@@ -103,7 +103,7 @@ gh run list -R lliangworld/ZCode --workflow=release-desktop.yml --limit 3
 
 ## 注意事项
 
-- **fork 首次启用**：推送 dev 分支后需在仓库 Actions 标签页手动启用 workflow
+- **fork 首次启用**：推送 release 分支后需在仓库 Actions 标签页手动启用 workflow
   （"I understand my workflows, go ahead and enable them"）。
 - **推送基线**：本 fork 没有 `origin/staging` 分支，pre-push 的受影响工程测试基线需显式指定，
   否则新分支首次推送会失败：`ZCODE_AFFECTED_TEST_BASE=origin/main git push ...`。
