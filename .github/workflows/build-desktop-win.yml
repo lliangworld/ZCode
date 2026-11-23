@@ -1,0 +1,171 @@
+name: Build Desktop win-x64
+
+# 本 fork 的单平台手动编译流水线（win-x64）：
+# - 仅 workflow_dispatch 手动触发：Actions 页选择 "Build Desktop win-x64" → "Run workflow" → 选分支。
+# - 只构建并上传 Actions Artifacts（zcode-desktop-win-x64），不发布 GitHub Release、不打版本 tag。
+# - 步骤与 release-desktop.yml 的 win 腿一致（同一 runner、windows-2022 锁版本、VS 2022 兜底安装、
+#   PSModulePath 剔除、同一 pnpm bundle:desktop 入口、同一产物 glob），用于单平台独立重建。
+# - 产物版本取 root package.json 的 version（无日期后缀，如 ZCode-4.0.0-win-x64.exe）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-desktop-win-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build win-x64
+    # windows-latest 已切到 VS 2026（安装路径 Visual Studio\18，无 VS 2022），
+    # 上游 runtime host 的 CMake 硬编码 "Visual Studio 17 2022" 生成器会直接失败；
+    # windows-2022 预装 VS 2022 Enterprise（17.14），生成器可直接发现。
+    # 该镜像退役时改回 windows-latest，由下方安装步骤兜底（见其轮询等待实现）。
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本读取 root package.json 的 packageManager: pnpm@10.33.2
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - name: Cache Electron / electron-builder binaries
+        uses: actions/cache@v4
+        with:
+          key: electron-${{ runner.os }}-${{ hashFiles('packages/desktop/package.json') }}
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+
+      # Bugfix: pnpm@10.33 在 node-linker=hoisted 模式下存在已知竞态
+      # （pnpm/pnpm#13627、pnpm/pnpm#12880）：hoisted 硬链接由 worker 线程并发执行，
+      # 把 _tmp_* 暂存目录 rename 到目标路径时，可能因父目录被并发 swap-rename 搬走
+      # （#12880，与我们踩到的形态一致：bundle-require/vite 的嵌套 esbuild hoisted
+      # 副本），或因 patchedDependencies 的同步 chdir 窗口（#13627）而 ERR_PNPM_ENOENT。
+      # 本仓库 .npmrc 为 node-linker=hoisted 且有 9 个 patchedDependencies，两个触发
+      # 条件都命中；v3.18.2-20261113 linux runner 连续两次冷安装命中（mac/win 同条件通过）。
+      # 官方修复在 pnpm>=11.25（#13627→11.22，#12880→11.25；10.x 线至 10.34.9 均无
+      # backport），升级属大版本迁移，另行排期。临时缓解为同 job 内重试：首次尝试已把
+      # store 写满，重试即热 store 场景；且 setup-node 的 store 缓存只在 job 成功时保存，
+      # 整 job 重跑（Re-run failed jobs）会再次冷启动，无法破局。
+      # 注意：该竞态也可能静默产生不完整的依赖树（install 退出码为 0，v4.0.0-20261123
+      # mac runner 即踩中嵌套 esbuild 副本缺失），此时重跑本 workflow 即可。
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3 4; do
+            if pnpm install --frozen-lockfile; then
+              exit 0
+            fi
+            echo "::warning::pnpm install failed (attempt $i/4), retrying in 5s"
+            sleep 5
+          done
+          echo "::error::pnpm install failed after 4 attempts"
+          exit 1
+
+      # Bugfix: windows-latest 镜像已升级到 VS 2026（安装路径 Visual Studio\18），
+      # 不再附带 VS 2022。上游 v3.18.0 同步引入 scripts/windows-runtime-host 原生组件，
+      # 其 CMake 配置硬编码 "Visual Studio 17 2022" 生成器
+      # （scripts/build-windows-runtime-host.mjs resolveRuntimeHostBuild），
+      # configure 报 "could not find any instance of Visual Studio"，
+      # 经 "Runtime host CMake failed: 1" → prepare:windows-runtime-host 失败，
+      # 导致 win-x64 打包整体失败（v3.18.0-20261112 发版时 win 作业即此原因，
+      # mac/linux 不受影响：该步骤仅 win 路径执行）。
+      # 修复依据：Bundle 前确保存在 VS 2022（v17.x）实例——镜像没有就用
+      # vs_buildtools.exe 安装 MSVC 工具集与 NativeDesktop 核心组件（含 Windows SDK），
+      # 安装后经 vswhere 注册，CMake 的 VS 17 2022 生成器即可发现。
+      # 不引入 microsoft/setup-msbuild：该 action 仅将 MSBuild.exe 加入 PATH，
+      # 不安装 VS 也不解决 CMake 生成器发现。
+      # 返工依据（两次修复后 CMake 仍报找不到实例）：vs_buildtools.exe 父进程在派生
+      # 子安装进程后立即退出（退出码 0），Start-Process -Wait 与调用运算符都只等到父
+      # 进程；步骤结束即被作业进程树回收，安装实际未完成，而 CMake 经 COM 枚举只认
+      # 已完成注册的实例。因此启动后必须轮询等待实例注册，不能以父进程退出为准。
+      # 正常情况下 win 作业跑在预装 VS 2022 的 windows-2022 上，本步骤直接跳过；
+      # 只有镜像失去 VS 2022 时才真正安装。
+      # 本步骤只在 CI 运行区安装，不提交回仓库。
+      - name: Install Visual Studio 2022 Build Tools (runtime host)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          function Get-VS2022 {
+            & $vswhere -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          }
+          $vs2022 = Get-VS2022
+          if (-not $vs2022) {
+            $installer = Join-Path $env:RUNNER_TEMP "vs_buildtools.exe"
+            # vs/17/release 是 VS 2022（v17）频道；vs/stable 会装到 VS 2026（v18），
+            # 与 CMake 的 "Visual Studio 17 2022" 生成器不匹配。
+            Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile $installer
+            $log = Join-Path $env:RUNNER_TEMP "vs_buildtools_install.log"
+            $installArgs = @(
+              "--quiet", "--wait", "--norestart", "--nocache", "--log", $log,
+              "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+              "--add", "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core"
+            )
+            Write-Host "Installing VS 2022 Build Tools (MSVC toolset + Windows SDK) for runtime host CMake build"
+            & $installer @installArgs
+            # 父进程立即退出不代表安装完成：轮询直到 vswhere 发现 v17.x 实例或超时，
+            # 保持步骤存活，避免子安装进程被作业进程树回收。
+            $deadline = (Get-Date).AddMinutes(25)
+            do {
+              Start-Sleep -Seconds 15
+              $vs2022 = Get-VS2022
+            } while (-not $vs2022 -and (Get-Date) -lt $deadline)
+            if (-not $vs2022) {
+              Get-Content $log -Tail 60 -ErrorAction SilentlyContinue
+              throw "VS 2022 Build Tools not registered after install (see installer log tail above)"
+            }
+          }
+          else {
+            Write-Host "VS 2022 already present at: $vs2022"
+          }
+          Write-Host "=== vswhere: VS 2022 instances ==="
+          & $vswhere -all -products * -version "[17.0,18.0)" -property installationPath
+          Write-Host "=== vswhere: instance with VC toolset ==="
+          & $vswhere -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+
+      # Bugfix: windows-2022 镜像的 PSModulePath 含有 PowerShell 7 的版本化模块目录
+      # （C:\program files\powershell\7\Modules），powershell.exe（5.1）执行
+      # Expand-Archive 时会自动加载 PS7 版 Microsoft.PowerShell.Archive 模块，
+      # 其内部调用 .NET Framework 下不存在的 ExtractToDirectory 三参重载，
+      # 报 "Cannot find an overload ... argument count: 3"，zip 解压必然失败：
+      # v4.0.0-20261123 两次发版 win 作业均因此失败（ugrep 解压失败 →
+      # prepare:native-search 退出 1 → Bundle desktop (win/x64) 失败）。
+      # 为什么内联而不是经 GITHUB_ENV：pwsh 启动时会用默认值重建 PSModulePath
+      # 并把自身 Modules 目录加回来（本地实测确认），前面步骤写干净值会被本步骤
+      # 的 pwsh shell 再次污染，子进程继承到的仍是脏值。必须在同一个 pwsh 进程内、
+      # 启动 bundle 前剔除，子进程（pnpm → node → powershell.exe）才继承干净值；
+      # 该模式已本地验证（进程内剔除后 spawn powershell.exe 解压成功）。
+      # 镜像或上游修复该回归后可移除本行剔除逻辑。
+      - name: Bundle desktop (win/x64)
+        shell: pwsh
+        env:
+          ZCODE_ENV: production
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          $env:PSModulePath = (($env:PSModulePath -split ';') | Where-Object { $_ -and $_ -notmatch '\\powershell\\[0-9]+\\' }) -join ';'
+          Write-Host "PSModulePath sanitized (dropped versioned PowerShell 7 module dirs): $env:PSModulePath"
+          pnpm bundle:desktop -- --os win --arch x64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode-desktop-win-x64
+          if-no-files-found: error
+          path: |
+            packages/desktop/dist/ZCode-*-win-x64.exe
+            packages/desktop/dist/*.exe.blockmap
+            packages/desktop/dist/latest.yml

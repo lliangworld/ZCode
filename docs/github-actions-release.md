@@ -19,6 +19,15 @@
   只构建并上传 Actions Artifacts（`zcode-desktop-{mac-arm64,win-x64,linux-x64}`），不发布 Release。
   产物版本不加日期后缀（如 `ZCode-3.17.1-win-x64.exe`）。
 - **tag 触发（正式发版）**：推送 `v*` 格式 tag 自动构建三平台，并发布 GitHub Release（附全部安装包）。
+- **单平台手动编译（独立重建）**：三个仅 `workflow_dispatch` 触发的 workflow——
+  [build-desktop-mac.yml](../.github/workflows/build-desktop-mac.yml)、
+  [build-desktop-win.yml](../.github/workflows/build-desktop-win.yml)、
+  [build-desktop-linux.yml](../.github/workflows/build-desktop-linux.yml)。
+  Actions 页选择对应 workflow → "Run workflow" → 选分支，只构建该平台并上传
+  Artifacts（`zcode-desktop-<平台>`），不发布 Release、不打版本 tag。步骤与发版流水线
+  对应平台腿一致（含 VS 2022 兜底安装、libarchive-tools、PSModulePath 剔除等修复），
+  用于单平台独立重建：发版 run 的某一平台失败（如 macOS runner 容量不足、pnpm 竞态）
+  时不必整条重跑。产物版本同样不加日期后缀（如 `ZCode-4.0.0-win-x64.exe`）。
 
 ## 版本约定（与上游区分）
 
@@ -95,7 +104,7 @@ gh run list -R lliangworld/ZCode --workflow=release-desktop.yml --limit 3
 | 平台    | runner                  | 目标            | 产物                                                                |
 | ------- | ----------------------- | --------------- | ------------------------------------------------------------------- |
 | macOS   | `macos-latest`（arm64） | `--mac --arm64` | `.dmg` / `.zip` + `latest-mac.yml`                                  |
-| Windows | `windows-latest`        | `--win --x64`   | `.exe` + `latest.yml`                                               |
+| Windows | `windows-2022`          | `--win --x64`   | `.exe` + `latest.yml`                                               |
 | Linux   | `ubuntu-latest`         | `--linux --x64` | `.AppImage` / `.deb` / `.rpm` / `.pkg.tar.zst` + `latest-linux.yml` |
 
 构建命令统一为 `ZCODE_ENV=production pnpm bundle:desktop -- --os <os> --arch <arch>`，
@@ -130,6 +139,25 @@ gh run list -R lliangworld/ZCode --workflow=release-desktop.yml --limit 3
   重试即热 store 场景（v3.18.2-20261113 起启用）。
   注意：不要用整 job 重跑替代——`actions/setup-node` 的 pnpm store 缓存只在 job
   成功时保存，失败的 job 不写缓存，Re-run failed jobs 会再次冷安装、再次踩雷。
+  该竞态也可能静默产生不完整的依赖树（install 退出码为 0）：v4.0.0-20261123
+  mac runner 即踩中嵌套 esbuild 副本缺失（tsup 报
+  `Cannot find module .../esbuild/lib/main.js`），重跑对应作业或单平台
+  workflow（见「触发方式」）即可，换一个 runner 实例大概率不再命中。
+- **win 构建的 Expand-Archive 回归（PSModulePath 污染）**：`windows-2022` 镜像的
+  `PSModulePath` 含有 PowerShell 7 的版本化模块目录
+  （`C:\program files\powershell\7\Modules`），`powershell.exe`（5.1）执行
+  `Expand-Archive` 时会自动加载 PS7 版 `Microsoft.PowerShell.Archive` 模块，
+  其内部调用 .NET Framework 下不存在的 `ExtractToDirectory` 三参重载，报
+  "Cannot find an overload ... argument count: 3"，zip 解压必然失败
+  （v4.0.0-20261123 两次发版 win 作业均因此失败：ugrep 解压失败 →
+  `prepare:native-search` 退出 1 → Bundle desktop (win/x64) 失败；linux/mac
+  不受影响：该解压仅 win32 路径执行）。
+  修复：win 的 Bundle 步骤在同一个 pwsh 进程内、启动 bundle 前把版本化
+  PowerShell 模块目录从 `PSModulePath` 剔除，子进程链
+  （pnpm → node → powershell.exe）继承干净值；该模式已本地复现根因并验证。
+  注意不能只在前面步骤经 `GITHUB_ENV` 传干净值——pwsh 启动时会用默认值重建
+  该变量并把自身 Modules 目录加回来，Bundle 步骤的 pwsh shell 会再次污染
+  子进程环境。镜像或上游修复该回归后可移除该剔除逻辑。
 - **未签名产物**：本 fork 无代码签名证书，产物为未签名安装包——Windows 会弹 SmartScreen
   提示（点"仍要运行"），macOS 首次打开需右键 → 打开，或 `xattr -cr /Applications/ZCode.app`。
 - **签名扩展（可选）**：如需签名，准备 OV 代码签名证书（.pfx），在仓库 secrets 配置

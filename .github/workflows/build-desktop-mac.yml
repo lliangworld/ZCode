@@ -1,0 +1,93 @@
+name: Build Desktop mac-arm64
+
+# 本 fork 的单平台手动编译流水线（mac-arm64）：
+# - 仅 workflow_dispatch 手动触发：Actions 页选择 "Build Desktop mac-arm64" → "Run workflow" → 选分支。
+# - 只构建并上传 Actions Artifacts（zcode-desktop-mac-arm64），不发布 GitHub Release、不打版本 tag。
+# - 步骤与 release-desktop.yml 的 mac 腿一致（同一 runner、同一 pnpm bundle:desktop 入口、同一产物 glob），
+#   用于单平台独立重建：发版 run 的某一平台失败时，不必整条重跑。
+# - 产物版本取 root package.json 的 version（无日期后缀，如 ZCode-4.0.0-mac-arm64.dmg）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-desktop-mac-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build mac-arm64
+    runs-on: macos-latest # arm64 runner
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本读取 root package.json 的 packageManager: pnpm@10.33.2
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+
+      - name: Cache Electron / electron-builder binaries
+        uses: actions/cache@v4
+        with:
+          key: electron-${{ runner.os }}-${{ hashFiles('packages/desktop/package.json') }}
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+
+      # Bugfix: pnpm@10.33 在 node-linker=hoisted 模式下存在已知竞态
+      # （pnpm/pnpm#13627、pnpm/pnpm#12880）：hoisted 硬链接由 worker 线程并发执行，
+      # 把 _tmp_* 暂存目录 rename 到目标路径时，可能因父目录被并发 swap-rename 搬走
+      # （#12880，与我们踩到的形态一致：bundle-require/vite 的嵌套 esbuild hoisted
+      # 副本），或因 patchedDependencies 的同步 chdir 窗口（#13627）而 ERR_PNPM_ENOENT。
+      # 本仓库 .npmrc 为 node-linker=hoisted 且有 9 个 patchedDependencies，两个触发
+      # 条件都命中；v4.0.0-20261123 mac runner 即踩中嵌套 esbuild 副本缺失
+      # （tsup 报 Cannot find module .../esbuild/lib/main.js）。
+      # 官方修复在 pnpm>=11.25（#13627→11.22，#12880→11.25；10.x 线至 10.34.9 均无
+      # backport），升级属大版本迁移，另行排期。临时缓解为同 job 内重试：首次尝试已把
+      # store 写满，重试即热 store 场景；且 setup-node 的 store 缓存只在 job 成功时保存，
+      # 整 job 重跑（Re-run failed jobs）会再次冷启动，无法破局。
+      # 注意：该竞态也可能静默产生不完整的依赖树（install 退出码为 0），此时重跑本
+      # workflow 即可，换一个 runner 实例大概率不再命中。
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3 4; do
+            if pnpm install --frozen-lockfile; then
+              exit 0
+            fi
+            echo "::warning::pnpm install failed (attempt $i/4), retrying in 5s"
+            sleep 5
+          done
+          echo "::error::pnpm install failed after 4 attempts"
+          exit 1
+
+      - name: Bundle desktop (mac/arm64)
+        env:
+          ZCODE_ENV: production
+          # 可选签名：配置 secrets 后 electron-builder 内置签名链路自动生效（标准 CSC_LINK/.pfx，
+          # 不依赖本 fork 中缺失的 scripts/sign-windows.ps1）；不配置时为空字符串，产出未签名包。
+          # 不要设置 ZCODE_ENABLE_WINDOWS_SIGN=1：该链路的 sign-windows.ps1 不在本 fork 中，必失败。
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: pnpm bundle:desktop -- --os mac --arch arm64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode-desktop-mac-arm64
+          if-no-files-found: error
+          path: |
+            packages/desktop/dist/ZCode-*-mac-arm64.dmg
+            packages/desktop/dist/ZCode-*-mac-arm64.zip
+            packages/desktop/dist/*.blockmap
+            packages/desktop/dist/latest-mac.yml
