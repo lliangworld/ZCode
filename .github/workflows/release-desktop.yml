@@ -26,15 +26,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os_alias: mac-arm64
-            runs_on: macos-latest # arm64 runner
-            target_os: mac
-            target_arch: arm64
-            artifact_paths: |
-              packages/desktop/dist/ZCode-*-mac-arm64.dmg
-              packages/desktop/dist/ZCode-*-mac-arm64.zip
-              packages/desktop/dist/*.blockmap
-              packages/desktop/dist/latest-mac.yml
+          # 暂时屏蔽 mac-arm64 腿（不删除）：GitHub macOS arm64 runner 容量持续紧张，
+          # v4.0.0-20261123 发版期间连续 5 次排队约 15 分钟均未获取到 runner 被取消
+          # （注解 "The job was not acquired by Runner of type hosted even after
+          # multiple attempts"），先只发 win/linux。容量恢复后取消下方注释即可恢复。
+          # - os_alias: mac-arm64
+          #   runs_on: macos-latest # arm64 runner
+          #   target_os: mac
+          #   target_arch: arm64
+          #   artifact_paths: |
+          #     packages/desktop/dist/ZCode-*-mac-arm64.dmg
+          #     packages/desktop/dist/ZCode-*-mac-arm64.zip
+          #     packages/desktop/dist/*.blockmap
+          #     packages/desktop/dist/latest-mac.yml
           - os_alias: win-x64
             # windows-latest 已切到 VS 2026（安装路径 Visual Studio\18，无 VS 2022），
             # 上游 runtime host 的 CMake 硬编码 "Visual Studio 17 2022" 生成器会直接失败；

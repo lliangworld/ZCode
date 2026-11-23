@@ -18,6 +18,11 @@ concurrency:
 
 jobs:
   build:
+    # 暂时屏蔽（不删除本文件）：GitHub macOS arm64 runner 容量持续紧张，
+    # v4.0.0-20261123 期间连续 5 次排队约 15 分钟均未获取到 runner 被取消
+    # （"The job was not acquired by Runner of type hosted even after multiple
+    # attempts"）。容量恢复后删除下面这行 if: false 即可恢复手动 mac 编译。
+    if: false
     name: Build mac-arm64
     runs-on: macos-latest # arm64 runner
     timeout-minutes: 90

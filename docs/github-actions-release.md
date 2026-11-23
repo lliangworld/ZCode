@@ -28,6 +28,8 @@
   对应平台腿一致（含 VS 2022 兜底安装、libarchive-tools、PSModulePath 剔除等修复），
   用于单平台独立重建：发版 run 的某一平台失败（如 macOS runner 容量不足、pnpm 竞态）
   时不必整条重跑。产物版本同样不加日期后缀（如 `ZCode-4.0.0-win-x64.exe`）。
+  注：mac 的 workflow 暂时屏蔽（job 级 `if: false`，文件保留未删）——GitHub macOS
+  arm64 runner 容量持续紧张（见「构建矩阵」下方说明），容量恢复后删除该行即可恢复。
 
 ## 版本约定（与上游区分）
 
@@ -106,6 +108,12 @@ gh run list -R lliangworld/ZCode --workflow=release-desktop.yml --limit 3
 | macOS   | `macos-latest`（arm64） | `--mac --arm64` | `.dmg` / `.zip` + `latest-mac.yml`                                  |
 | Windows | `windows-2022`          | `--win --x64`   | `.exe` + `latest.yml`                                               |
 | Linux   | `ubuntu-latest`         | `--linux --x64` | `.AppImage` / `.deb` / `.rpm` / `.pkg.tar.zst` + `latest-linux.yml` |
+
+**macOS 暂时屏蔽（文件保留未删）**：v4.0.0-20261123 发版期间 GitHub macOS arm64 runner
+容量持续紧张，连续 5 次排队约 15 分钟均未获取到 runner 被取消（注解 "The job was not
+acquired by Runner of type hosted even after multiple attempts"），`release-desktop.yml`
+的 mac 矩阵腿已注释屏蔽、`build-desktop-mac.yml` 已设 job 级 `if: false`，先只发
+win/linux；容量恢复后在两处取消屏蔽即可恢复三平台构建。
 
 构建命令统一为 `ZCODE_ENV=production pnpm bundle:desktop -- --os <os> --arch <arch>`，
 正式产物无 `_TEST` 文件名后缀，Built-in Provider 使用 `config/provider/zcode-builtin.json`。
