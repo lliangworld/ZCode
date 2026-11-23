@@ -114,6 +114,11 @@ gh run list -R lliangworld/ZCode --workflow=release-desktop.yml --limit 3
 
 - **fork 首次启用**：推送 release 分支后需在仓库 Actions 标签页手动启用 workflow
   （"I understand my workflows, go ahead and enable them"）。
+- **默认分支为 `release`**：GitHub 的 `workflow_dispatch` 只触发已注册的 workflow，而未在
+  默认分支上的新 workflow 不会因分支 push 自动注册。本 fork 的 workflow 只存在于 release
+  分支（`main` 是纯上游镜像，必须保持 ff-only，不能把 fork 文件合进去），故仓库默认分支
+  设为 `release`，四个 workflow（Release Desktop 与三个单平台手动编译）才能都在 Actions
+  页手动触发。注意：默认分支同时决定 clone 的默认检出分支与 PR 基准分支。
 - **推送基线**：本 fork 没有 `origin/staging` 分支，pre-push 的受影响工程测试基线需显式指定，
   否则新分支首次推送会失败：`ZCODE_AFFECTED_TEST_BASE=origin/main git push ...`。
 - **win 构建依赖 VS 2022 Build Tools**：上游 v3.18.0 起桌面打包包含 Windows 原生组件
