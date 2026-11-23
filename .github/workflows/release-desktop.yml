@@ -186,6 +186,27 @@ jobs:
           Write-Host "=== vswhere: instance with VC toolset ==="
           & $vswhere -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
 
+      # Bugfix: windows-2022 镜像的 PSModulePath 含有 PowerShell 7 的版本化模块目录
+      # （C:\program files\powershell\7\Modules），powershell.exe（5.1）执行
+      # Expand-Archive 时会自动加载 PS7 版 Microsoft.PowerShell.Archive 模块，
+      # 其内部调用 .NET Framework 下不存在的 ExtractToDirectory 三参重载，
+      # 报 "Cannot find an overload ... argument count: 3"，zip 解压必然失败。
+      # v4.0.0-20261123 发版 win 作业即此原因：ugrep 解压失败 →
+      # prepare:native-search 退出 1 → Bundle desktop (win/x64) 失败
+      # （linux/mac 不受影响：该解压仅 win32 路径执行）。
+      # 修复：把版本化 PowerShell 模块目录从 PSModulePath 剔除，经 GITHUB_ENV
+      # 传给后续步骤，5.1 只解析 System32 自带的正确模块，Expand-Archive 恢复
+      # 可用；不改上游脚本 scripts/prebuilt-binary-extract.mjs。已本地复现根因
+      # 并验证修复有效。镜像或上游修复该回归后可移除本步骤。
+      - name: Sanitize PSModulePath for Windows bundle
+        if: matrix.target_os == 'win'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $clean = (($env:PSModulePath -split ';') | Where-Object { $_ -and $_ -notmatch '\\powershell\\[0-9]+\\' }) -join ';'
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "PSModulePath=$clean" + [Environment]::NewLine)
+          Write-Host "PSModulePath sanitized (dropped versioned PowerShell 7 module dirs): $clean"
+
       - name: Bundle desktop (${{ matrix.target_os }}/${{ matrix.target_arch }})
         env:
           ZCODE_ENV: production
